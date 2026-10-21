@@ -15,7 +15,7 @@ from .reranker import get_reranker_cls
 from .construct_email import render_email
 
 
-# 行人重识别、行人检索相关词
+# 行人重识别、行人检索相关词（匹配时忽略大小写）
 REID_KEYWORDS = (
     "person re-identification",
     "person reidentification",
@@ -27,8 +27,6 @@ REID_KEYWORDS = (
     "person retrieval",
     "pedestrian retrieval",
     "reid",
-    "Reid",
-    "ReID",
     "re-id",
     "行人重识别",
     "行人再识别",
@@ -107,6 +105,44 @@ def is_multimodal_reid_paper(paper) -> bool:
     return has_reid and has_modality
 
 
+def is_zotero_503_error(exc: Exception) -> bool:
+    """检查异常及其异常链是否表示 HTTP 503。"""
+    current = exc
+    visited = set()
+
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+
+        # 检查原始 HTTP 异常携带的响应状态
+        response = getattr(current, "response", None)
+        status_code = getattr(response, "status_code", None)
+
+        if status_code == 503:
+            return True
+
+        # 部分异常直接携带状态码
+        if getattr(current, "status_code", None) == 503:
+            return True
+
+        # pyzotero 包装后的异常可能只保留错误文字。
+        # 只匹配明确的 HTTP 状态描述，避免误匹配其他数字。
+        message = str(current)
+
+        if re.search(
+            r"\b(?:code|status(?:[_\s-]*code)?)"
+            r"\s*[:=]?\s*['\"]?503\b"
+            r"|\bserver error\s*['\"]?503\b"
+            r"|\b503\s+service unavailable\b",
+            message,
+            flags=re.IGNORECASE,
+        ):
+            return True
+
+        current = current.__cause__ or current.__context__
+
+    return False
+
+
 def normalize_path_patterns(
     patterns: list[str] | ListConfig | None,
     config_key: str,
@@ -148,9 +184,8 @@ class Executor:
             for source in config.executor.source
         }
 
-        self.reranker = get_reranker_cls(
-            config.executor.reranker
-        )(config)
+        # 延迟初始化：只有 Zotero 可用且有匹配论文时才加载排序器
+        self.reranker = None
 
         self.openai_client = OpenAI(
             api_key=config.llm.api.key,
@@ -270,15 +305,34 @@ class Executor:
 
     def run(self):
         # 1. 获取 Zotero 参考论文
-        corpus = self.fetch_zotero_corpus()
-        corpus = self.filter_corpus(corpus)
+        corpus = []
+        zotero_unavailable = False
 
-        if len(corpus) == 0:
-            logger.error(
-                "No zotero papers found. Please check your "
-                "Zotero library, abstracts and collection filters."
+        try:
+            corpus = self.fetch_zotero_corpus()
+
+        except Exception as exc:
+            # 只针对 Zotero 请求返回的 503 启用备用流程
+            if not is_zotero_503_error(exc):
+                raise
+
+            zotero_unavailable = True
+
+            logger.warning(
+                "Zotero returned HTTP 503 "
+                "(maintenance or temporary unavailability). "
+                "Continuing without Zotero for this run."
             )
-            return
+
+        if not zotero_unavailable:
+            corpus = self.filter_corpus(corpus)
+
+            if not corpus:
+                logger.error(
+                    "No Zotero papers found. Please check your "
+                    "Zotero library, abstracts and collection filters."
+                )
+                return
 
         # 2. 获取各来源的新论文
         all_papers = []
@@ -287,7 +341,7 @@ class Executor:
             logger.info(f"Retrieving {source} papers...")
             papers = retriever.retrieve_papers()
 
-            if len(papers) == 0:
+            if not papers:
                 logger.info(f"No {source} papers found")
                 continue
 
@@ -301,7 +355,7 @@ class Executor:
             "from all sources"
         )
 
-        # 3. 根据标题和摘要，筛选多模态 ReID 论文
+        # 3. 根据标题和摘要筛选多模态 ReID 论文
         before_filter = len(all_papers)
 
         all_papers = [
@@ -317,24 +371,41 @@ class Executor:
         for paper in all_papers:
             logger.info(f"Matched paper: {paper.title}")
 
-        # 4. 用 Zotero 参考论文对筛选结果排序
-        reranked_papers = []
+        selected_papers = []
 
-        if len(all_papers) > 0:
-            logger.info("Reranking papers...")
+        if all_papers:
+            # 4. 正常时按 Zotero 相似度排序；
+            #    Zotero 503 时保留检索返回顺序
+            if zotero_unavailable:
+                logger.info(
+                    "Skipping Zotero similarity reranking. "
+                    "Using retrieval order."
+                )
+                selected_papers = all_papers
 
-            reranked_papers = self.reranker.rerank(
-                all_papers,
-                corpus,
-            )
-            reranked_papers = reranked_papers[
+            else:
+                if self.reranker is None:
+                    self.reranker = get_reranker_cls(
+                        self.config.executor.reranker
+                    )(self.config)
+
+                logger.info(
+                    "Reranking papers using Zotero corpus..."
+                )
+
+                selected_papers = self.reranker.rerank(
+                    all_papers,
+                    corpus,
+                )
+
+            selected_papers = selected_papers[
                 :self.config.executor.max_paper_num
             ]
 
             # 5. 生成摘要和作者单位
             logger.info("Generating TLDR and affiliations...")
 
-            for paper in tqdm(reranked_papers):
+            for paper in tqdm(selected_papers):
                 paper.generate_tldr(
                     self.openai_client,
                     self.config.llm,
@@ -353,6 +424,6 @@ class Executor:
 
         # 6. 发送邮件
         logger.info("Sending email...")
-        email_content = render_email(reranked_papers)
+        email_content = render_email(selected_papers)
         send_email(self.config, email_content)
         logger.info("Email sent successfully")
