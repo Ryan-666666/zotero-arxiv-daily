@@ -6,6 +6,29 @@ zotero:
 
 source:
   arxiv:
+    # Search titles/abstracts directly before any result limit. Set null for legacy RSS.
+    search_query: >-
+      (ti:"person re-identification" OR abs:"person re-identification"
+      OR ti:"person reidentification" OR abs:"person reidentification"
+      OR ti:"person re identification" OR abs:"person re identification"
+      OR ti:"person re-id" OR abs:"person re-id"
+      OR ti:"pedestrian re-identification" OR abs:"pedestrian re-identification"
+      OR ti:"pedestrian reidentification" OR abs:"pedestrian reidentification"
+      OR ti:"pedestrian re identification" OR abs:"pedestrian re identification"
+      OR ti:"person retrieval" OR abs:"person retrieval"
+      OR ti:"pedestrian retrieval" OR abs:"pedestrian retrieval"
+      OR ti:reid OR abs:reid OR ti:"re-id" OR abs:"re-id")
+      AND (ti:multimodal OR abs:multimodal OR ti:"multi-modal" OR abs:"multi-modal"
+      OR ti:"multi modal" OR abs:"multi modal"
+      OR ti:"cross-modal" OR abs:"cross-modal" OR ti:"cross-modality" OR abs:"cross-modality"
+      OR ti:"cross modal" OR abs:"cross modal" OR ti:"cross modality" OR abs:"cross modality"
+      OR ti:infrared OR abs:infrared OR ti:"rgb-ir" OR abs:"rgb-ir"
+      OR ti:"text-to-image" OR abs:"text-to-image" OR ti:"text-based" OR abs:"text-based"
+      OR ti:"text-guided" OR abs:"text-guided" OR ti:"image-text" OR abs:"image-text"
+      OR ti:"text to image" OR abs:"text to image" OR ti:"text based" OR abs:"text based"
+      OR ti:"text guided" OR abs:"text guided" OR ti:"image text" OR abs:"image text"
+      OR ti:multispectral OR abs:multispectral OR ti:"multi-spectral" OR abs:"multi-spectral")
+    lookback_days: 365 # Search the most recent year by UTC submission date.
     category: null # The categories of target arxiv papers. Find the abbr of your research area from [here](https://arxiv.org/category_taxonomy). Example: ["cs.AI","cs.CV","cs.LG","cs.CL"]
     include_cross_list: false # Whether to include arXiv cross-list papers in subscribed categories. Example: true
   biorxiv:

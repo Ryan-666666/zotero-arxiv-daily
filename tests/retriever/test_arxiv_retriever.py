@@ -4,9 +4,76 @@ import time
 from types import SimpleNamespace
 
 import feedparser
+import pytest
 
 from zotero_arxiv_daily.retriever.arxiv_retriever import ArxivRetriever, _run_with_hard_timeout
 import zotero_arxiv_daily.retriever.arxiv_retriever as arxiv_retriever
+
+
+def test_topic_search_before_debug_limit(config, monkeypatch):
+    from datetime import datetime, timezone
+
+    config.source.arxiv.search_query = '(ti:reid OR abs:reid) AND abs:infrared'
+    config.executor.debug = True
+    captured = {}
+
+    class FixedDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 21, 0, 20, tzinfo=timezone.utc)
+
+    results = [SimpleNamespace(
+        primary_category="cs.CL", get_short_id=lambda: "2610.99999v1",
+    )] + [SimpleNamespace(
+        primary_category="cs.CV", get_short_id=lambda i=i: f"2610.{i:05d}v1",
+    ) for i in range(15)]
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def results(self, search):
+            captured["search"] = search
+            return iter(results)
+
+    monkeypatch.setattr(arxiv_retriever, "datetime", FixedDatetime)
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", FakeClient)
+    monkeypatch.setattr(arxiv_retriever.feedparser, "parse", lambda _: pytest.fail("RSS used"))
+    raw = ArxivRetriever(config)._retrieve_raw_papers()
+    assert len(raw) == 10
+    assert all(p.primary_category == "cs.CV" for p in raw)
+    search = captured["search"]
+    assert config.source.arxiv.search_query in search.query
+    assert "submittedDate:[202510210020 TO 202610210020]" in search.query
+    assert "(cat:cs.AI OR cat:cs.CV)" in search.query
+    assert search.max_results is None
+    assert search.sort_by == arxiv_retriever.arxiv.SortCriterion.SubmittedDate
+
+
+def test_topic_search_no_general_paper_cap(config, monkeypatch):
+    config.source.arxiv.search_query = "abs:reid AND abs:multimodal"
+    config.source.arxiv.include_cross_list = True
+    results = [SimpleNamespace(
+        primary_category="cs.CL", get_short_id=lambda i=i: f"2610.{i:05d}v1",
+    ) for i in range(125)]
+    results.append(SimpleNamespace(
+        primary_category="cs.CL", get_short_id=lambda: "2610.00000v2",
+    ))
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", lambda **kw: SimpleNamespace(
+        results=lambda search: iter(results),
+    ))
+    assert len(ArxivRetriever(config)._retrieve_raw_papers()) == 125
+
+
+def test_topic_search_empty_and_invalid_window(config, monkeypatch):
+    config.source.arxiv.search_query = "abs:reid AND abs:multimodal"
+    monkeypatch.setattr(arxiv_retriever.arxiv, "Client", lambda **kw: SimpleNamespace(
+        results=lambda search: iter([]),
+    ))
+    assert ArxivRetriever(config)._retrieve_raw_papers() == []
+    config.source.arxiv.lookback_days = 0
+    with pytest.raises(ValueError, match="lookback_days"):
+        ArxivRetriever(config)._retrieve_raw_papers()
 
 
 def _sleep_and_return(value: str, delay_seconds: float) -> str:

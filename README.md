@@ -1,3 +1,23 @@
+## Multimodal ReID retrieval
+
+This fork searches the arXiv API directly for **ReID terms AND modality terms** in
+titles and abstracts, within the configured categories. This includes visible/infrared,
+text-based, cross-modal, multimodal and multispectral ReID. The existing downstream
+keyword check remains as an additional relevance check.
+
+`config/base.yaml` supplies `source.arxiv.search_query` by default, so GitHub Actions
+also inherits it when `CUSTOM_CONFIG` does not specify this field. Set it to `null`
+only to restore the general category RSS feed.
+
+`source.arxiv.lookback_days` defaults to **365**, measured in UTC by submission date.
+The one-year window can repeat papers across daily
+emails; no persistent delivery history is maintained. Increase it for a backfill.
+Normal runs paginate all matching results in the window. Debug runs take up to 10
+topic-matched candidates, rather than the first 10 general category papers.
+`include_cross_list` still controls whether papers outside the primary subscribed
+categories are accepted. No matches produces an empty candidate list, never a fallback
+to unrelated papers. Query syntax follows the [official arXiv API manual](https://info.arxiv.org/help/api/user-manual.html).
+
 <p align="center">
   <a href="" rel="noopener">
  <img width=200px height=200px src="assets/logo.svg" alt="logo"></a>
@@ -168,7 +188,7 @@ That's all! Now you can test the workflow by manually triggering it:
 ![test](./assets/test.png)
 
 > [!NOTE]
-> The Test-Workflow Action is the debug version of the main workflow (Send-emails-daily), which always retrieve 5 arxiv papers regardless of the date. While the main workflow will be automatically triggered everyday and retrieve new papers released yesterday. There is no new arxiv paper at weekends and holiday, in which case you may see "No new papers found" in the log of main workflow.
+> In this fork, both workflows search the most recent year for multimodal ReID. The Test workflow limits processing to 10 topic-matched candidates; normal runs retrieve all matching candidates before ranking and the configured email limit.
 
 Then check the log and the receiver email after it finishes.
 

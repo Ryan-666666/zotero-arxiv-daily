@@ -4,7 +4,7 @@ from arxiv import Result as ArxivResult
 from ..protocol import Paper
 from ..utils import extract_markdown_from_pdf, extract_tex_code_from_tar
 import calendar
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import multiprocessing
 import os
 from queue import Empty
@@ -215,6 +215,10 @@ class ArxivRetriever(BaseRetriever):
             raise ValueError("category must be specified for arxiv.")
 
     def _retrieve_raw_papers(self) -> list[ArxivResult]:
+        search_query = self.retriever_config.get("search_query")
+        if search_query:
+            return self._search_papers(search_query)
+
         query = '+'.join(self.config.source.arxiv.category)
         include_cross_list = self.config.source.arxiv.get("include_cross_list", False)
         rss_url = f"https://rss.arxiv.org/atom/{query}"
@@ -276,6 +280,45 @@ class ArxivRetriever(BaseRetriever):
             raw_papers.append(_entry_to_arxiv_result(entry))
 
         return raw_papers
+
+    def _search_papers(self, search_query: str) -> list[ArxivResult]:
+        """Apply topic and date constraints on arXiv before limiting results."""
+        lookback_days = int(self.retriever_config.get("lookback_days", 365))
+        if lookback_days < 1:
+            raise ValueError("source.arxiv.lookback_days must be positive")
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(days=lookback_days)
+        query = (
+            f"({search_query}) AND "
+            f"submittedDate:[{start:%Y%m%d%H%M} TO {now:%Y%m%d%H%M}]"
+        )
+        categories = set(self.retriever_config.category)
+        category_query = " OR ".join(f"cat:{category}" for category in sorted(categories))
+        query += f" AND ({category_query})"
+        logger.info(f"Searching arXiv directly: {query}")
+        search = arxiv.Search(
+            query=query,
+            max_results=None,
+            sort_by=arxiv.SortCriterion.SubmittedDate,
+            sort_order=arxiv.SortOrder.Descending,
+        )
+        client = arxiv.Client(page_size=100, delay_seconds=3, num_retries=5)
+        include_cross_list = self.retriever_config.get("include_cross_list", False)
+        papers = []
+        seen = set()
+        for paper in client.results(search):
+            if not include_cross_list and paper.primary_category not in categories:
+                continue
+            paper_id = re.sub(r"v\d+$", "", paper.get_short_id())
+            if paper_id in seen:
+                continue
+            seen.add(paper_id)
+            papers.append(paper)
+            # These are already topic-matched results, never a general-paper sample.
+            if self.config.executor.debug and len(papers) >= 10:
+                break
+        logger.info(f"arXiv topic search returned {len(papers)} candidate papers")
+        return papers
 
     def convert_to_paper(self, raw_paper: ArxivResult) -> Paper:
         title = raw_paper.title
