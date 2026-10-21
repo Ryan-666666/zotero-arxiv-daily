@@ -9,6 +9,66 @@ from zotero_arxiv_daily.executor import Executor, normalize_path_patterns
 from zotero_arxiv_daily.protocol import CorpusPaper
 
 
+@pytest.mark.parametrize("message", [
+    "Code: 503\nResponse: Service Unavailable",
+    "Code: 400\nResponse: Zotero’s servers are temporarily offline for a security update. "
+    "Your local Zotero data is unaffected. Please try syncing again later.",
+    "Code: 400\nResponse: Zotero's servers are temporarily offline for maintenance.",
+])
+def test_zotero_unavailable_response(message):
+    from zotero_arxiv_daily.executor import is_zotero_unavailable_error
+    assert is_zotero_unavailable_error(RuntimeError(message))
+
+
+@pytest.mark.parametrize("message", [
+    "Code: 400\nResponse: Invalid library ID",
+    "Code: 403\nResponse: Invalid API key",
+    "Code: 404\nResponse: Not found",
+    "Connection failed",
+])
+def test_zotero_other_errors_still_raise(config, message):
+    executor = Executor.__new__(Executor)
+    executor.config = config
+
+    def fail():
+        raise RuntimeError(message)
+
+    executor.fetch_zotero_corpus = fail
+    with pytest.raises(RuntimeError, match=message.splitlines()[0]):
+        executor.run()
+
+
+def test_zotero_maintenance_continues_to_retrieval_and_email(config, monkeypatch):
+    from types import SimpleNamespace
+    from pyzotero.errors import UnsupportedParamsError
+    import zotero_arxiv_daily.executor as executor_module
+    from tests.canned_responses import make_sample_paper
+
+    executor = Executor.__new__(Executor)
+    executor.config = config
+    executor.reranker = None
+    executor.openai_client = object()
+    sent = []
+    generated = []
+    paper = make_sample_paper(title="Multimodal Person Re-Identification", score=None)
+    paper.generate_tldr = lambda *args: generated.append("tldr")
+    paper.generate_affiliations = lambda *args: generated.append("affiliations")
+    executor.retrievers = {"arxiv": SimpleNamespace(retrieve_papers=lambda: [paper])}
+
+    def fail():
+        raise UnsupportedParamsError(
+            "Code: 400\nResponse: Zotero’s servers are temporarily offline for a security update."
+        )
+
+    executor.fetch_zotero_corpus = fail
+    monkeypatch.setattr(executor_module, "get_reranker_cls", lambda *args: pytest.fail("reranker loaded"))
+    monkeypatch.setattr(executor_module, "send_email", lambda cfg, papers: sent.append(papers))
+    executor.run()
+    assert len(sent) == 1
+    assert paper.title in sent[0]
+    assert generated == ["tldr", "affiliations"]
+
+
 # ---------------------------------------------------------------------------
 # normalize_path_patterns — migrated from test_include_path.py
 # ---------------------------------------------------------------------------
@@ -177,8 +237,8 @@ def test_run_end_to_end(config, monkeypatch):
     monkeypatch.setattr("zotero_arxiv_daily.executor.OpenAI", lambda **kw: stub_client)
     monkeypatch.setattr("zotero_arxiv_daily.reranker.api.OpenAI", lambda **kw: stub_client)
     retrieved = [
-        make_sample_paper(title="E2E Paper 1", score=None),
-        make_sample_paper(title="E2E Paper 2", score=None),
+        make_sample_paper(title="Multimodal Person Re-Identification", score=None),
+        make_sample_paper(title="Text-based Person Retrieval", score=None),
     ]
 
     # Import to register the arxiv retriever

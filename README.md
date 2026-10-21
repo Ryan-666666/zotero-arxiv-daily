@@ -1,5 +1,10 @@
 ## Multimodal ReID retrieval
 
+If Zotero returns HTTP 503 or explicitly reports that its servers are temporarily
+offline (including a maintenance response sent as HTTP 400), retrieval and email
+generation continue without Zotero similarity ranking, using retrieval order.
+Other Zotero errors, such as invalid credentials or library IDs, still raise errors.
+
 This fork searches the arXiv API directly for **ReID terms AND modality terms** in
 titles and abstracts, within the configured categories. This includes visible/infrared,
 text-based, cross-modal, multimodal and multispectral ReID. The existing downstream

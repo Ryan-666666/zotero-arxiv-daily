@@ -109,6 +109,22 @@ def is_multimodal_reid_paper(paper) -> bool:
     return has_reid and has_modality
 
 
+def is_zotero_unavailable_error(exc: Exception) -> bool:
+    """Recognize HTTP 503 and Zotero's explicit maintenance response, even on 400."""
+    if is_zotero_503_error(exc):
+        return True
+
+    current = exc
+    visited = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        message = str(current).casefold().replace("’", "'")
+        if "zotero's servers are temporarily offline" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def is_zotero_503_error(exc: Exception) -> bool:
     """检查异常及其异常链是否表示 HTTP 503。"""
     current = exc
@@ -316,15 +332,15 @@ class Executor:
             corpus = self.fetch_zotero_corpus()
 
         except Exception as exc:
-            # 只针对 Zotero 请求返回的 503 启用备用流程
-            if not is_zotero_503_error(exc):
+            # Zotero 的明确维护响应可能使用 HTTP 400，而不是 503。
+            if not is_zotero_unavailable_error(exc):
                 raise
 
             zotero_unavailable = True
 
             logger.warning(
-                "Zotero returned HTTP 503 "
-                "(maintenance or temporary unavailability). "
+                "Zotero is temporarily unavailable "
+                "(HTTP 503 or an explicit maintenance response). "
                 "Continuing without Zotero for this run."
             )
 
@@ -379,7 +395,7 @@ class Executor:
 
         if all_papers:
             # 4. 正常时按 Zotero 相似度排序；
-            #    Zotero 503 时保留检索返回顺序
+            #    Zotero 维护时保留检索返回顺序
             if zotero_unavailable:
                 logger.info(
                     "Skipping Zotero similarity reranking. "
